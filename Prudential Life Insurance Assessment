@@ -1,0 +1,102 @@
+install.packages("readr")
+library(readr)
+
+train <- read_csv("train.csv")
+test <- read_csv("test.csv")
+
+feature.names <- names(train)[2:(ncol(train)-1)]
+
+for (f in feature.names) {
+  if (class(train[[f]])=="character") {
+    levels <- unique(c(train[[f]], test[[f]]))
+    train[[f]] <- as.integer(factor(train[[f]], levels=levels))
+    test[[f]]  <- as.integer(factor(test[[f]],  levels=levels))
+  }
+}
+
+train$Train_Flag <- 1 
+test$Train_Flag <- 0 
+test$Response <- NA 
+
+All_Data <- rbind(train,test)
+
+str(All_Data)
+
+psum <- function(...,na.rm=FALSE) { 
+  rowSums(do.call(cbind,list(...)),na.rm=na.rm) }
+
+All_Data$Number_medical_keywords <- psum(All_Data[,c(paste("Medical_Keyword_",1:48,sep=""))])
+
+table(All_Data$Number_medical_keywords)
+
+All_Data$Number_medical_keywords <- ifelse(All_Data$Number_medical_keywords>7,7,All_Data$Number_medical_keywords)
+table(All_Data$Number_medical_keywords)
+
+str(All_Data, list.len=ncol(All_Data))
+All_Data <- All_Data[,!(names(All_Data) %in% c(paste("Medical_Keyword_",1:48,sep="")))]
+medical_keywords <- All_Data$Number_medical_keywords  
+All_Data<-cbind(All_Data[,1:79],medical_keywords,All_Data[,80:ncol(All_Data)])
+All_Data <- All_Data[,!(names(All_Data) %in% c("Number_medical_keywords"))]
+
+
+train <- All_Data[All_Data$Train_Flag==1,] 
+test <- All_Data[All_Data$Train_Flag==0,] 
+
+train <- train[,!(names(train) %in% c("Train_Flag"))]
+test <- test[,!(names(test) %in% c("Train_Flag","Response"))]
+str(test, list.len=ncol(test)) 
+str(train, list.len=ncol(train)) 
+
+set.seed(1234)
+train$random <- runif(nrow(train))
+
+train_70 <- train[train$random <= 0.7,] 
+train_30 <- train[train$random > 0.7,] 
+
+train <- train[,!(names(train) %in% c("random"))]
+train_70 <- train_70[,!(names(train_70) %in% c("random"))]
+train_30 <- train_30[,!(names(train_30) %in% c("random"))]
+
+round(table(train_70$Response)/nrow(train_70),2)
+round(table(train_30$Response)/nrow(train_30),2)
+
+install.packages("xgboost")
+library(xgboost)
+
+feature1.names <- names(train_70)[2:(ncol(train_70)-1)]
+feature2.names <- names(train_30)[2:(ncol(train_30)-1)]
+feature3.names <- names(test)[2:(ncol(test)-2)]
+
+clf <- xgboost(data        = data.matrix(train_70[,feature1.names]),
+               label       = train_70$Response,
+               eta         = 0.025,
+               depth       = 10,
+               nrounds     = 2500,
+               objective   = "reg:linear",
+               eval_metric = "rmse")
+
+train_30$Prediction <- as.integer(round(predict(clf, data.matrix(train_30[,feature2.names]))))
+
+str(train_30, list.len=ncol(train_30)) 
+
+train_30[train_30$Prediction<1, "Prediction"] <- 1
+train_30[train_30$Prediction>8, "Prediction"] <- 8
+
+round(table(train_30$Prediction)/nrow(train_30),2)
+
+round((table(train_30$Prediction,train_30$Response)/nrow(train_30))*100,1)
+
+install.packages("Metrics")
+library("Metrics")
+ScoreQuadraticWeightedKappa(train_30$Prediction,as.numeric(train_30$Response)) 
+
+submission <- data.frame(Id=test$Id)
+submission$Response <- as.integer(round(predict(clf, data.matrix(test[,feature3.names]))))
+
+submission[submission$Response<1, "Response"] <- 1
+submission[submission$Response>8, "Response"] <- 8
+
+str(submission)
+submission$Response<-as.integer(submission$Response)
+
+write_csv(submission, "xgboost_submission.csv")
